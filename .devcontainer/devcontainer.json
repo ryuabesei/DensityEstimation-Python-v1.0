@@ -1,0 +1,31 @@
+{
+    "name": "ml-exp-env",
+    "dockerComposeFile": ["../docker-compose.yml"],
+    "service": "python",
+    "workspaceFolder": "/code",
+    "customizations": {
+        "vscode": {
+        "extensions": [
+            "ms-python.python",
+            "ms-toolsai.jupyter",
+            "MS-CEINTL.vscode-language-pack-ja",
+            "charliermarsh.ruff"
+        ],
+        "settings": {
+            "python.defaultInterpreterPath": "/usr/bin/python3",
+            "[python]": {
+            "editor.codeActionsOnSave": {
+                "source.fixAll.ruff": "explicit",
+                "source.organizeImports.ruff": "explicit"
+            },
+            "editor.defaultFormatter": "ms-python.python",
+            "editor.formatOnSave": true,
+            "editor.formatOnType": true
+            }
+        }
+        }
+    },
+    "forwardPorts": [8888],
+    "remoteUser": "root",
+    "shutdownAction": "stopCompose"
+}
