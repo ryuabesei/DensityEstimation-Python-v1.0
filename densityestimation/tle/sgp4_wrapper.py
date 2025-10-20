@@ -485,3 +485,13 @@ def fundarg(ttt: float, opt: str = '80'):
 
     return (l, l1, f, d, omega,
             lonmer, lonven, lonear, lonmar, lonjup, lonsat, lonurn, lonnep, precrate)
+
+# densityestimation/tle/sgp4_wrapper.py の先頭あたりに追記
+_EOPMat_global = None
+def set_eop_matrix(eop: np.ndarray):
+    global _EOPMat_global
+    _EOPMat_global = np.asarray(eop)
+def get_eop_matrix():
+    return _EOPMat_global
+# computeEOP_Celestrak 呼び出し側で get_eop_matrix() を使うよう変更
+# 例: computeEOP_Celestrak(get_eop_matrix(), jdate)
