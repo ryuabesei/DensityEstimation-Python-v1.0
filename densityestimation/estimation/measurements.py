@@ -6,11 +6,24 @@ import numpy as np
 
 def fullmee2mee(Xp: np.ndarray, nop: int, svs: int) -> np.ndarray:
     """
-    入力: Xp (n, 2n+1) with stacked [ (6 MEE + 1 BC)*nop + r ]
-    出力: 観測空間（MEEのみ） (6*nop, 2n+1)
+    Extracts only the Modified Equinoctial Elements (MEE)
+    from the full state vector that also includes BC and ROM.
+
+    Parameters
+    ----------
+    Xp : ndarray
+        Full state vector [svs*nop + r, N]
+    nop : int
+        Number of objects
+    svs : int
+        State vector size per object (typically 7 = 6 MEE + 1 BC)
+
+    Returns
+    -------
+    mee : ndarray
+        Stacked MEE states [6*nop, N]
     """
-    ncols = Xp.shape[1]
-    out = []
-    for i in range(nop):
-        out.append(Xp[i*svs:(i*svs+6), :])
-    return np.vstack(out)
+    mee = np.zeros((6 * nop, Xp.shape[1]), dtype=float)
+    for k in range(nop):
+        mee[6 * k : 6 * (k + 1), :] = Xp[svs * k : svs * k + 6, :]
+    return mee

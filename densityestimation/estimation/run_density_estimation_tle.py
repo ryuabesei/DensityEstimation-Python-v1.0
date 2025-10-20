@@ -10,11 +10,14 @@ from sgp4.api import jday
 from densityestimation.data.bc_loader import load_bc_data
 from densityestimation.data.eop_loader import load_eop_celestrak
 from densityestimation.estimation.observations import generate_observations_mee
+from densityestimation.models.rom_model import (
+    generate_rom_density_model,  # ← 追加：統合ROMジェネレータ
+)
 from densityestimation.tle.get_tles_for_estimation import (
     TLEObject,
     get_tles_for_estimation,
 )
-from densityestimation.ukf.srukf import ukf  # 使うなら
+from densityestimation.ukf.srukf import ukf
 
 # ---- 地球重力定数（MATLABの使い分けに合わせた参照値） ----
 GM_EARTH_KM3_S2_SGP4 = 398600.8         # 参考：SGP4系の既定（MATLABの mu）
@@ -151,6 +154,7 @@ def _assemble_x0(
 def run_density_estimation_tle(
     par: EstimationInputs,
     *,
+    # 互換性のため残します。省略時は generate_rom_density_model() を使います。
     rom_generator: Optional[Callable[[str, int, float, float], ROMBundle]] = None,
     # 追加: ROM 初期化ベクトル z0 を作る関数（Uh'*(log10 rho - mean) など）
     rom_initializer: Optional[Callable[[ROMBundle, float], np.ndarray]] = None,
@@ -164,7 +168,7 @@ def run_density_estimation_tle(
     Parameters
     ----------
     rom_generator : (ROMmodel, r, jd0, jdf) -> ROMBundle
-        例: densityestimation.models.rom_model.generate_rom_density_model
+        指定がない場合は densityestimation.models.rom_model.generate_rom_density_model を使用
     rom_initializer : (rom, jd0) -> z0 (shape=(r,))
         例: JB2008 でグリッド密度を作って Uh'*(log10(rho)-Dens_Mean) を返す実装を渡す
     """
@@ -204,16 +208,18 @@ def run_density_estimation_tle(
     rom: Optional[ROMBundle] = None
     if rom_generator is not None:
         rom = rom_generator(par.ROMmodel, par.r, jd0, jdf)
+    else:
+        # 統合版ジェネレータを直接使用（JB2008/NRLMSISE/TIEGCM に対応）
+        rom = generate_rom_density_model(par.ROMmodel, par.r, jd0, jdf)
 
-        # ROM 初期化（任意）：MATLAB の z0_M 相当を反映
-        if rom_initializer is not None:
-            z0 = np.asarray(rom_initializer(rom, jd0), dtype=float).reshape(-1)
-            if z0.size != par.r:
-                raise ValueError(
-                    f"rom_initializer returned size {z0.size}, expected r={par.r}"
-                )
-            x0g[-par.r :, 0] = z0
-    # まだ ROM が無ければ ROM 状態はゼロ初期化のまま
+    # ROM 初期化（任意）：MATLAB の z0_M 相当を反映
+    if rom is not None and rom_initializer is not None:
+        z0 = np.asarray(rom_initializer(rom, jd0), dtype=float).reshape(-1)
+        if z0.size != par.r:
+            raise ValueError(
+                f"rom_initializer returned size {z0.size}, expected r={par.r}"
+            )
+        x0g[-par.r :, 0] = z0
 
     # --- 測定ノイズ RM ---
     RM = _build_RM(objects)
@@ -241,7 +247,7 @@ def run_density_estimation_tle(
         Qv[svs * i + 6] = 1.0e-16  # BC
 
     # ROM 部分
-    if rom is not None and rom.Qrom is not None:
+    if rom is not None and getattr(rom, "Qrom", None) is not None:
         # Pv: 初期 ROM 分散（MATLAB値）
         Pv[-par.r :] = 5.0
         Pv[-par.r] = 20.0  # first mode
@@ -276,9 +282,7 @@ def run_density_estimation_tle(
             P=P,
             RM=RM,
             Q=Q,
-            angle_block=6,  # MEEのL
-            # kappa=None を渡すとデフォの (alpha=1e-3,beta=2,kappa=0) になる実装なので
-            # MATLABの κ=3−L に合わせたい場合は srukf.ukf の実装を調整すること
+            angle_block=6,  # MEEのL（6,12,18,...行）を wrap
         )
 
     return dict(

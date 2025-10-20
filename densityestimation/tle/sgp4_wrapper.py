@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
+from sgp4.api import WGS72, WGS72OLD, WGS84, Satrec
 
 # --- グローバル相当（MATLAB: global EOPMat） ---
 EOPMat = None  # 後で .mat から読み込むローダを実装予定
@@ -495,3 +496,41 @@ def get_eop_matrix():
     return _EOPMat_global
 # computeEOP_Celestrak 呼び出し側で get_eop_matrix() を使うよう変更
 # 例: computeEOP_Celestrak(get_eop_matrix(), jdate)
+
+
+# SGP4の μ は「km^3/s^2」で扱う（MATLAB の getgravc(72) と整合）
+MU_WGS72_KM3_S2 = 398600.8
+MU_WGS84_KM3_S2 = 398600.5
+MU_WGS72OLD_KM3_S2 = 398600.79964
+
+def twoline2rv_edit_py(
+    line1: str,
+    line2: str,
+    whichconst: str = "WGS72",  # "WGS72" | "WGS84" | "WGS72OLD"
+) -> Tuple[Satrec, float]:
+    """
+    MATLAB twoline2rv_edit.m のPython版互換。
+    - 戻り値: (satrec, a_TLE[km])
+      a_TLE は TLE 平均運動 no から計算した半長径（km）。
+    """
+    if whichconst.upper() == "WGS72":
+        wc = WGS72
+        mu = MU_WGS72_KM3_S2
+    elif whichconst.upper() == "WGS84":
+        wc = WGS84
+        mu = MU_WGS84_KM3_S2
+    elif whichconst.upper() == "WGS72OLD":
+        wc = WGS72OLD
+        mu = MU_WGS72OLD_KM3_S2
+    else:
+        raise ValueError("whichconst must be one of: 'WGS72', 'WGS84', 'WGS72OLD'")
+
+    # python-sgp4 で TLE から Satrec を作成（内部で epoch 変換など完了）
+    satrec = Satrec.twoline2rv(line1.strip(), line2.strip(), wc)
+
+    # MATLAB と同じ計算で a_TLE を出す:
+    # satrec.no は [rad/min]（Kozai mean motion）。nk=[rad/s]
+    nk = satrec.no / 60.0
+    a_TLE = (mu / (nk ** 2)) ** (1.0 / 3.0)  # km
+
+    return satrec, float(a_TLE)
