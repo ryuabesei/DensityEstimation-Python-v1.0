@@ -17,6 +17,9 @@ from densityestimation.tle.get_tles_for_estimation import (
     TLEObject,
     get_tles_for_estimation,
 )
+
+# ★ 追加：EOP を SGP4/TEME→J2000 変換に渡す
+from densityestimation.tle.sgp4_wrapper import set_eop_matrix
 from densityestimation.ukf.srukf import ukf
 
 # ---- 地球重力定数（MATLABの使い分けに合わせた参照値） ----
@@ -37,11 +40,11 @@ class EstimationInputs:
     selected_objects: List[int]
     plot_figures: bool = False
 
-    # ファイル系
-    eop_path: str = "Data/EOP-All.txt"
+    # ファイル系（★ eop_path のデフォルトを実構造に合わせた）
+    eop_path: str = "densityestimation/data/EOP-All.txt"
     tle_dir: str = "TLEdata"
     tle_single_file: bool = True
-    bc_path: str = "Data/BCdata.txt"
+    bc_path: str = "densityestimation/data/BCdata.txt"
 
     # 時間刻み（秒）
     dt_seconds: int = 3600
@@ -172,12 +175,15 @@ def run_density_estimation_tle(
     rom_initializer : (rom, jd0) -> z0 (shape=(r,))
         例: JB2008 でグリッド密度を作って Uh'*(log10(rho)-Dens_Mean) を返す実装を渡す
     """
-    # --- 日時・EOP ---
+
+    # --- 日時 ---
     jd0, jdf = _jd_range(par.yr, par.mth, par.dy, par.nof_days)
-    load_eop_celestrak(par.eop_path)
+
+    # --- EOP 読み込み → TEME→J2000 変換へ反映（★重要★） ---
+    EOPMat = load_eop_celestrak(par.eop_path, full=False)  # shape (N,6) [rad,rad,s,s,rad,rad]
+    set_eop_matrix(EOPMat)
 
     # --- TLE ---
-    # ※ MATLAB と同様に少し広い収集窓にしたい場合はここを拡張
     objects = get_tles_for_estimation(
         start_year=par.yr,
         start_month=par.mth,

@@ -45,7 +45,8 @@ def get_tles_for_estimation(
     Returns
     -------
     List[TLEObject]
-        各要素は .noradID と .satrecs（エポック昇順＆期間内にフィルタ済）を持つ。
+        各要素は .noradID と .satrecs（エポック昇順＆期間内にフィルタ済）、
+        可能なら .name と .tle_lines（元の2行文字列タプル）を持つ。
     """
     selected_objects = sorted(selected_objects)
     base = Path(relative_dir)
@@ -69,7 +70,7 @@ def get_tles_for_estimation(
             objs = get_tles(str(p))  # 通常1要素（そのNORADだけ）が返る
             objects.extend(objs)
 
-    # 2) 日付でフィルタ
+    # 2) 日付でフィルタ（両端含む）
     jd_start = _jd_utc_0h(start_year, start_month, start_day)
     jd_end   = _jd_utc_0h(end_year, end_month, end_day)
 
@@ -100,6 +101,14 @@ def get_tles_for_estimation(
                 f"{end_day:02d}-{end_month:02d}-{end_year:04d}."
             )
 
-        out[idx] = TLEObject(noradID=nid, satrecs=obj.satrecs[first : last + 1])
+        # name / tle_lines を可能なら引き継ぐ（未定義なら渡さない）
+        kwargs = dict(noradID=nid, satrecs=obj.satrecs[first : last + 1])
+        if hasattr(obj, "name"):
+            kwargs["name"] = getattr(obj, "name")
+        if hasattr(obj, "tle_lines"):
+            kwargs["tle_lines"] = getattr(obj, "tle_lines")
+
+        out[idx] = TLEObject(**kwargs)
 
     return out
+
