@@ -1,0 +1,3 @@
+# NORAD_ID  BC[m^2/kg]
+# minimal file for smoketest
+25544  0.010

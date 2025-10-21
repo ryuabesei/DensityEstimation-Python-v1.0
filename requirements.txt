@@ -19,9 +19,7 @@ scikit-learn
 scikit-image
 scikit-optimize
 scikit-optimize
-pymap3d
-pymsis
-pytest
-tqdm
-
-
+Pymap3d
+Pymsis
+Pytest
+Tqdm
