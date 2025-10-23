@@ -1,5 +1,6 @@
 # densityestimation/data/eop_loader.py
 # GNU GPL v3
+# CelesTrak形式のEOPを読む・1日分を抽出する
 
 from __future__ import annotations
 

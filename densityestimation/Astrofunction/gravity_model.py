@@ -1,5 +1,8 @@
 # densityestimation/Astrofunction/gravity_model.py
 # License: GNU GPL v3
+#重力ポテンシャルと加速度（J2〜Jn、EGM2008のLnmなど）計算
+#EGM2008 等の正規化球面調和係数 (Cnm, Snm) を使って、ECEF 座標系での地球重力加速度 [m/s²] を計算
+
 from __future__ import annotations
 
 from dataclasses import dataclass

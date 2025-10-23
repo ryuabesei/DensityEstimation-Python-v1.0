@@ -1,5 +1,6 @@
 # densityestimation/Astrofunction/gc2gd.py
 # License: GNU GPL v3
+#地心直交座標 → 測地量（経度・緯度・高度）
 from __future__ import annotations
 
 import numpy as np

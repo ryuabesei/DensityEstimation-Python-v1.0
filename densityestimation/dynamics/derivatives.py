@@ -1,11 +1,24 @@
 # Port of computeDerivative_PosVelBcRom.m
 # License: GNU GPL v3
+# 低軌道衛星の位置・速度・BC（+ ROM 状態）をまとめて時間発展させる微分方程式 f(t,x) を生成(重力は ECEF で計算)
 from __future__ import annotations
 
 from typing import Callable
 
 import numpy as np
 
+
+def drag_accel(r, v, BC, rho_fn):
+    """
+    r,v: ECI (m, m/s)
+    BC : m^2/kg
+    rho_fn: callable() -> rho [kg/m^3] を返す
+    return: a_drag (m/s^2) ベクトル
+    """
+    vrel = v  # とりあえず地球自転を無視（後で改良）
+    vmag = np.linalg.norm(vrel) + 1e-12
+    rho  = rho_fn()
+    return -0.5 * rho * vmag * vrel * BC  # Cd=2.2 を BC に吸収した定義
 
 def build_derivative_posvel_bc_rom(
     *,
@@ -109,3 +122,4 @@ def build_derivative_posvel_bc_rom(
         return dx.reshape(-1, order="F")
 
     return f
+

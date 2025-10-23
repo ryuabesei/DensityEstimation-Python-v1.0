@@ -5,7 +5,7 @@ from typing import Tuple
 
 import numpy as np
 
-from densityestimation.models.jb2008.constants import CONST
+from densityestimation.models.JB2008.constants import CONST
 
 
 def iers(eop: np.ndarray, mjd_utc: float, interp: str = "n") -> Tuple[

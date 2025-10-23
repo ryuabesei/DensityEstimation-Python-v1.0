@@ -1,5 +1,6 @@
 # densityestimation/Astrofunction/spice_loader.py
 # GNU GPL v3
+# SPICE（NASA/JPL の宇宙航法計算ライブラリ）を Python から使うための初期化関数
 
 from __future__ import annotations
 

@@ -1,4 +1,6 @@
 # License: GNU GPL v3
+#通日（DOY）・月日変換、UTC→JD/JED、JD/JED→年月日時分秒
+
 from __future__ import annotations
 
 import datetime as _dt

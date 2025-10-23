@@ -8,9 +8,18 @@ import numpy as np
 from sgp4.api import jday
 
 from densityestimation.data.eop_loader import load_eop_celestrak
-from densityestimation.estimation.observations import (
-    generate_observations_mee,  # ← 既に実装済みのもの
+from densityestimation.dynamics.derivatives import (
+    drag_accel,  # 既存想定（なければ簡易実装）
 )
+from densityestimation.estimation.observations import (
+    EstimationStateSpec,
+    generate_observations_mee,  # ← 既に実装済みのもの
+    pack_state,
+    unpack_state,
+)
+from densityestimation.orbit.mee import cartesian_to_mee, mee_to_cartesian  # 既存想定
+from densityestimation.orbit.propagation import propagate_cartesian  # 既存想定
+from densityestimation.rom.dmdc import discretize_lin
 from densityestimation.tle.get_tles import TLEObject
 from densityestimation.tle.get_tles_for_estimation import get_tles_for_estimation
 
@@ -76,3 +85,48 @@ def run_density_estimation_tle(cfg: EstimationConfig):
         "obs_epochs_jd": obs_epochs,
         "mee_obs": mee_obs,
     }
+
+
+def make_process_model(rom_runtime, spec: EstimationStateSpec, grid_interp_fn, dt_sec):
+    """
+    rom_runtime : ROMRuntime (Ac,Bc,Ur,xbar,input_fn を内包)
+    spec        : EstimationStateSpec(n_obj, nz)
+    grid_interp_fn: callable(log10rho_grid) -> rho(point)
+    dt_sec      : タイムステップ（推奨3600）
+    """
+    dt = float(dt_sec)
+
+    def f(x, t_epoch):
+        # 1) 分解
+        mee_list, bc_list, z = unpack_state(x, spec)
+
+        # 2) ROM状態を前進
+        z_next = rom_runtime.step_z(z, t_epoch, dt, discretize_lin)
+
+        # 3) 各オブジェクトの軌道を前進（ドラッグ含む）
+        mee_next = []
+        for (p,f,g,h,k,L), BC in zip(mee_list, bc_list):
+            # MEE -> R,V
+            r0,v0, mu = mee_to_cartesian((p,f,g,h,k,L))   # 既存関数に合わせて引数調整
+            # 密度推定（ここでは“現在のz”を使用）
+            def rho_here():
+                # grid補間（lat,LST,altの計算が既存ならそれを使用）
+                # 既存の関数に置き換えてOK。ひとまず log10rho_grid -> rho とするダミー:
+                rho = rom_runtime.density_at(z, grid_interp_fn)
+                return rho
+
+            # ドラッグ加速度（既存のdrag_accelを想定。なければ簡易CdA/mモデル）
+            a_drag = drag_accel(r0, v0, BC, rho_here)
+
+            # 1ステップ数値積分（既存のpropagate_cartesianに外力引数があるなら渡す）
+            r1, v1 = propagate_cartesian(r0, v0, dt, nonconservative_accel=a_drag)
+
+            # R,V -> MEE
+            mee1 = cartesian_to_mee(r1, v1, mu)
+            mee_next.append(mee1)
+
+        # 4) 再パック
+        x_next = pack_state(mee_next, bc_list, z_next)
+        return x_next
+
+    return f

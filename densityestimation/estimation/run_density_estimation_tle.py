@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -9,8 +10,19 @@ from sgp4.api import jday
 
 from densityestimation.data.bc_loader import load_bc_data
 from densityestimation.data.eop_loader import load_eop_celestrak
-from densityestimation.estimation.observations import generate_observations_mee
+from densityestimation.estimation.measurements import make_measurement_model
+
+# 状態仕様
+from densityestimation.estimation.observations import (
+    EstimationStateSpec,
+    generate_observations_mee,
+    pack_state,
+)
+from densityestimation.estimation.pipeline import make_process_model
+
+# ROM
 from densityestimation.models.rom_model import (
+    ROMRuntime,
     generate_rom_density_model,  # ← 追加：統合ROMジェネレータ
 )
 from densityestimation.tle.get_tles_for_estimation import (
@@ -307,3 +319,79 @@ def run_density_estimation_tle(
         BC_used=bc_used,
         rom=rom,
     )
+
+
+# UKF 実装（どちらでもOK）
+try:
+    from densityestimation.ukf.srukf import SquareRootUKF as UKF
+except Exception:
+    from densityestimation.ukf.unscented import UnscentedKalmanFilter as UKF
+
+# ====== 準備 ======
+n_obj  = 3       # まずは少数でスモークテスト
+nz     = 10      # ROMランク r
+dt_sec = 3600.0  # 1時間
+spec   = EstimationStateSpec(n_obj=n_obj, nz=nz)
+
+# --- JB2008 ROM の学習済みモデルをロード（Ur, xbar, Ac, Bc など） ---
+# 既存の読み出し関数があれば呼び出し。ここでは疑似的に placeholders:
+Ur   = np.load('JB2008_Ur.npy')
+xbar = np.load('JB2008_xbar.npy')
+Ac   = np.load('JB2008_Ac.npy')
+Bc   = np.load('JB2008_Bc.npy')
+
+# 入力（F10.7, Kp 等）を時刻から作る関数
+from densityestimation.spaceweather.load_jb2008_swdata import (
+    make_jb2008_input_fn,  # 既存想定
+)
+
+input_fn = make_jb2008_input_fn()
+
+rom = ROMRuntime(Ur=Ur, xbar=xbar, Ac=Ac, Bc=Bc, input_fn=input_fn)
+
+# 密度補間（log10rho_grid -> rho(point)）
+from densityestimation.grid import make_interp_fn  # 既存想定
+
+grid_interp_fn = make_interp_fn()
+
+# TLEプロバイダ
+from densityestimation.tle.get_tles_for_estimation import make_tle_provider  # 既存想定
+
+tle_provider = make_tle_provider()
+
+# --- f, h を構築 ---
+f = make_process_model(rom, spec, grid_interp_fn, dt_sec)
+h = make_measurement_model(spec, tle_provider)
+
+# --- 初期状態 x0 / 共分散 P0 / ノイズ行列 Q,R ---
+# 既存の論文設定に近い値を置く（後で調整）
+mee0_list = [ (7000.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n_obj) ]  # ダミー
+bc0_list  = [ 0.01 for _ in range(n_obj) ]
+z0        = np.zeros((nz,))
+x0        = pack_state(mee0_list, bc0_list, z0)
+
+nx = len(x0)
+P0 = np.eye(nx) * 1e-4
+
+# プロセスノイズ（論文 (20)(21) のオーダ）
+Q = np.eye(nx) * 1e-8
+
+# 観測ノイズ（論文 (19) を簡略化、物体ごとに diag([σp,σf,σg,σh,σk,σL])）
+R_block = np.diag([1.5e-8, 3e-10, 3e-10, 1e-9, 1e-9, 1e-8])
+R = np.kron(np.eye(n_obj), R_block)
+
+# --- UKF 準備 ---
+ukf = UKF(dim_x=nx, dim_z=6*n_obj, fx=f, hx=h, dt=dt_sec, x0=x0, P0=P0, Q=Q, R=R)
+
+# ====== 逐次推定（例: 24ステップ） ======
+t0 = datetime(2002,8,1,0,0,0, tzinfo=timezone.utc)
+t  = t0
+for k in range(24):
+    ukf.predict(t)      # fxで予測
+    z_meas = h(ukf.x, t)  # TLEからの観測値
+    ukf.update(z_meas, t)
+    t += timedelta(seconds=dt_sec)
+
+# 結果
+x_est = ukf.x
+print("Final state shape:", x_est.shape)

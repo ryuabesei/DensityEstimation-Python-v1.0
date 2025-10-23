@@ -1,4 +1,5 @@
 # License: GNU GPL v3
+#経度・緯度・高度（任意形状）と JD(UTC) を入力に、外部から渡された宇宙天気入力生成関数（compute_jb2000_swinputs）JB2008 本体の評価関数（jb2008_model）を使って JB2008 の密度を計算
 from __future__ import annotations
 
 from typing import Callable, Tuple

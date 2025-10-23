@@ -1,6 +1,9 @@
 # Origin: generateObservationsMEE.m (Gondelach 2020; modified Li 2022)
 # License: GNU GPL v3 (same as original)
+# TLE→SGP4→TEME→J2000→MEE 観測生成
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -52,3 +55,37 @@ def generate_observations_mee(objects, obs_epochs, GM_kms) -> np.ndarray:
             meeObs[6 * i:6 * i + 6, j] = np.asarray(mee).reshape(6,)
 
     return meeObs
+
+
+
+
+@dataclass
+class EstimationStateSpec:
+    n_obj: int     # 同化に使う物体数
+    nz: int        # ROM状態次元 (例: r=10)
+
+def pack_state(mee_list, bc_list, z):
+    """
+    mee_list: list of (p,f,g,h,k,L) for each object
+    bc_list : list of BC (m^2/kg) for each object
+    z       : (nz,) ROM reduced state
+    return  : (state_vec,)
+    """
+    parts = []
+    for (p,f,g,h,k,L), BC in zip(mee_list, bc_list):
+        parts.extend([p,f,g,h,k,L,BC])
+    parts.extend(list(z))
+    return np.array(parts, dtype=float)
+
+def unpack_state(x, spec: EstimationStateSpec):
+    n = spec.n_obj
+    nz = spec.nz
+    mee_list, bc_list = [], []
+    idx = 0
+    for _ in range(n):
+        p,f,g,h,k,L,BC = x[idx:idx+7]
+        mee_list.append((p,f,g,h,k,L))
+        bc_list.append(BC)
+        idx += 7
+    z = x[idx:idx+nz]
+    return mee_list, bc_list, z

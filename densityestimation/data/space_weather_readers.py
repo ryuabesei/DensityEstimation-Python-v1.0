@@ -1,4 +1,6 @@
 # densityestimation/data/space_weather_readers.py
+# 宇宙天気入力ファイル（DTC、SOLFSMY など）を、ヘッダやフォーマットの差異に強い方法で NumPy 配列に読み込む
+
 from __future__ import annotations
 
 import re

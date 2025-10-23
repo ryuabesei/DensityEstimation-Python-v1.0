@@ -1,5 +1,6 @@
 # densityestimation/Astrofunction/isdecayed.py
 # GNU GPL v3
+#衛星が大気圏に再突入（＝高度が一定以下）した時点で積分を停止するためのイベント関数
 from __future__ import annotations
 
 import numpy as np

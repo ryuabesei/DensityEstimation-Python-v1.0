@@ -480,3 +480,35 @@ def generate_rom_density_model(name: str, r: int, jd0: float, jdf: float,
 
     else:
         raise ValueError(f"Unsupported ROM model: {name}")
+
+
+class ROMRuntime:
+    def __init__(self, Ur, xbar, Ac, Bc, input_fn):
+        """
+        Ur   : (Ngrid, r) POD基底
+        xbar : (Ngrid,) 平均(log10密度) もしくは密度平均
+        Ac,Bc: ROM 連続時間行列
+        input_fn: callable(t) -> u_t (空間天気入力ベクトル)
+        """
+        self.Ur = Ur
+        self.xbar = xbar
+        self.Ac = Ac
+        self.Bc = Bc
+        self.input_fn = input_fn
+
+    def density_log10_grid(self, z):
+        # x = Ur z + xbar（論文の式(5): xは log10(density) を使う流儀）
+        return self.Ur @ z + self.xbar
+
+    def density_at(self, z, grid_interp_fn):
+        """
+        grid_interp_fn: callable(log10rho_grid) -> rho_at_point
+        グリッド→点への補間は呼び出し側に任せる（速度優先）
+        """
+        log10rho = self.density_log10_grid(z)
+        return grid_interp_fn(log10rho)
+
+    def step_z(self, z, t, dt, discretize):
+        u = self.input_fn(t)
+        Ad, Bd = discretize(self.Ac, self.Bc, dt)
+        return Ad @ z + Bd @ u

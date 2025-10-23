@@ -1,5 +1,6 @@
 # densityestimation/Astrofunction/sgp4_constants.py
 # GNU GPL v3
+# Vallado 準拠の SGP4 物理定数を読み込む
 
 from __future__ import annotations
 

@@ -1,4 +1,6 @@
 # License: GNU GPL v3
+#POD/DMDcで作った密度ROMの評価
+#POD/DMDc で得た ROM 状態ベクトルと、空間モード／平均の補間関数を使って、任意の時刻・位置（ECI位置＋JD）で 熱圏の対数密度→密度（kg/m³） を復元する
 from __future__ import annotations
 
 import math

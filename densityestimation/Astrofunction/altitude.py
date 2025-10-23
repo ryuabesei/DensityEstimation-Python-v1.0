@@ -1,9 +1,12 @@
 # License: GNU GPL v3
+#地心座標/測地座標からの高度計算
+#地心直交座標（ECI または ECEF）ベクトルから、WGS-84 に近い扁平楕円体（f=1/298.257, req=6378.14 km）を仮定して高度[km]を求める
 from __future__ import annotations
 
 import numpy as np
 
 
+#地心座標ベクトルから高度を算出
 def altitude(r: np.ndarray) -> np.ndarray:
     """
     Oblate Earth を仮定した高度を計算（MATLAB altitude.m のポート）

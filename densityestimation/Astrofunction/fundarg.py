@@ -1,5 +1,6 @@
-# densityestimation/Astrofunction/fundarg.py
 # License: GNU GPL v3
+#天体力学・潮汐・摂動の基本角（fundamental arguments）の計算
+#ユリウス世紀 ttt（TT/TDB 基準）を入力として、Delaunay 引数と主要惑星の黄経などの基本角を計算し、ラジアンで返す。
 from __future__ import annotations
 
 from typing import Tuple

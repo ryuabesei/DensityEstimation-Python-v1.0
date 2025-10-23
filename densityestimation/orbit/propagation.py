@@ -12,6 +12,27 @@ except Exception as e:
     raise RuntimeError("scipy が必要です（scipy.integrate.solve_ivp）。requirements.txt に追加してください。") from e
 
 
+MU_EARTH = 3.986004418e14  # m^3/s^2
+
+def two_body_accel(r):
+    rnorm = np.linalg.norm(r) + 1e-12
+    return -MU_EARTH * r / (rnorm**3)
+
+def propagate_cartesian(r0, v0, dt, nonconservative_accel=None):
+    """
+    単純なVelocity-Verlet (ドラッグ等は定数加速度近似)
+    """
+    a0 = two_body_accel(r0)
+    if nonconservative_accel is not None:
+        a0 = a0 + nonconservative_accel
+
+    r1 = r0 + v0*dt + 0.5*a0*(dt**2)
+    a1 = two_body_accel(r1)
+    if nonconservative_accel is not None:
+        a1 = a1 + nonconservative_accel
+    v1 = v0 + 0.5*(a0 + a1)*dt
+    return r1, v1
+
 def _wrap_to_2pi(a: np.ndarray) -> np.ndarray:
     return np.mod(a, 2.0 * np.pi)
 
