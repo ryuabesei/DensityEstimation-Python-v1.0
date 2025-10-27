@@ -1,42 +1,27 @@
-# Port of runDensityEstimationTLE.m
+# Python/densityestimation/estimation/run_density_estimation_tle.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from sgp4.api import jday
 
 from densityestimation.data.bc_loader import load_bc_data
 from densityestimation.data.eop_loader import load_eop_celestrak
-from densityestimation.estimation.measurements import make_measurement_model
-
-# 状態仕様
 from densityestimation.estimation.observations import (
     EstimationStateSpec,
     generate_observations_mee,
-    pack_state,
-)
-from densityestimation.estimation.pipeline import make_process_model
-
-# ROM
-from densityestimation.models.rom_model import (
-    ROMRuntime,
-    generate_rom_density_model,  # ← 追加：統合ROMジェネレータ
 )
 from densityestimation.tle.get_tles_for_estimation import (
     TLEObject,
     get_tles_for_estimation,
 )
-
-# ★ 追加：EOP を SGP4/TEME→J2000 変換に渡す
 from densityestimation.tle.sgp4_wrapper import set_eop_matrix
-from densityestimation.ukf.srukf import ukf
 
-# ---- 地球重力定数（MATLABの使い分けに合わせた参照値） ----
-GM_EARTH_KM3_S2_SGP4 = 398600.8         # 参考：SGP4系の既定（MATLABの mu）
-GM_EARTH_KM3_S2_ACCURATE = 398600.4418  # MATLAB で GM*1e-9 として使っているもの
+# ---- 地球重力定数（観測MEE計算で使用） ----
+GM_EARTH_KM3_S2_ACCURATE = 398600.4418
 
 
 # ===== 入出力データ構造 =====
@@ -52,19 +37,26 @@ class EstimationInputs:
     selected_objects: List[int]
     plot_figures: bool = False
 
-    # ファイル系（★ eop_path のデフォルトを実構造に合わせた）
+    # ファイル系（実プロジェクトの構成に合わせる）
     eop_path: str = "densityestimation/data/EOP-All.txt"
     tle_dir: str = "TLEdata"
     tle_single_file: bool = True
     bc_path: str = "densityestimation/data/BCdata.txt"
 
-    # 時間刻み（秒）
+    # 伝播（動力学）ステップ [秒]
     dt_seconds: int = 3600
+
+    # ★ 追加: 観測エポックのサンプリング間隔 [時間]
+    #   例) 1.0=1時間, 1/6=10分, 0.25=15分
+    obs_hours_step: float = 1.0
 
 
 @dataclass
 class ROMBundle:
-    # MATLAB generateROMdensityModel(...) の戻り値たち
+    """
+    必要に応じて rom_generator が返す想定のバンドル（任意）。
+    ROMを使わない場合は None で問題なし。
+    """
     AC: np.ndarray
     BC: np.ndarray
     Uh: np.ndarray
@@ -77,55 +69,67 @@ class ROMBundle:
     maxAtmAlt: float
     SWinputs: Dict[str, np.ndarray]
     Qrom: np.ndarray
-    # 追加で、初期 ROM 状態を作る補助（任意）
-    # e.g., jb2008_initializer: Callable[[...], np.ndarray]
 
 
 # ===== ユーティリティ =====
 
 def _jd_range(yr: int, mth: int, dy: int, nof_days: int) -> Tuple[float, float]:
     jd0, fr0 = jday(yr, mth, dy, 0, 0, 0.0)
-    jdf = jd0 + fr0 + nof_days
+    jdf = jd0 + fr0 + float(nof_days)
     return jd0 + fr0, jdf
 
 
 def _time_vector_seconds(jd0: float, jdf: float, dt: int) -> np.ndarray:
+    """両端を含む [0, tf] を dt 刻みで返す秒ベクトル。"""
     tf = (jdf - jd0) * 86400.0
-    t = np.arange(0.0, tf + 1e-9, dt, dtype=float)
+    n = int(np.floor(tf / dt + 1e-9)) + 1
+    t = np.arange(n, dtype=float) * float(dt)
     return t
 
 
 def _obs_epochs_from_time(jd0: float, tsec: np.ndarray) -> np.ndarray:
-    return jd0 + tsec / 86400.0
+    """（従来）秒ベクトルからJD配列へ変換。"""
+    return jd0 + np.asarray(tsec, float) / 86400.0
+
+
+def _obs_epochs_by_hours_step(jd0: float, jdf: float, hours_step: float) -> np.ndarray:
+    """開始JDから終了JDまでを hours_step[hr] 間隔でサンプリングしてJD配列を返す。"""
+    h = max(float(hours_step), 1e-6)  # 0割や負値を防止
+    total_hours = (jdf - jd0) * 24.0
+    nsteps = int(np.floor(total_hours / h)) + 1
+    return jd0 + (np.arange(nsteps, dtype=float) * h) / 24.0
+
+
+def _end_ymd(yr: int, mth: int, dy: int, nof_days: int) -> Tuple[int, int, int]:
+    start = datetime(yr, mth, dy)
+    end = start + timedelta(days=max(nof_days - 1, 0))
+    return end.year, end.month, end.day
 
 
 def _select_objects(objects: List[TLEObject], selected_ids: List[int]) -> List[TLEObject]:
-    out = []
+    """selected_objects の順序で抽出。無いIDはエラー。"""
+    out: List[TLEObject] = []
     for nid in selected_ids:
-        found = [o for o in objects if o.noradID == nid]
+        found = [o for o in objects if int(o.noradID) == int(nid)]
         if not found:
-            raise ValueError(f"No TLEs found for object {nid}.")
+            raise ValueError(f"No TLEs found for NORAD {nid}.")
         out.append(found[0])
     return out
 
 
 def _build_RM(objects: List[TLEObject]) -> np.ndarray:
     """
-    MATLAB の RM 構築を忠実再現。オブジェクトごとに 6×6 の対角を積み上げる。
+    測定ノイズ共分散の初期対角（物体間独立、MEE 6要素×n_obj）。
+    離心率 e に基づくスケーリング（論文の考え方）に近い形。
     """
     blocks = []
     for obj in objects:
-        ecco = float(obj.satrecs[0].ecco)
-        RMfactor = max(ecco / 0.004, 1.0)
+        # 初期TLEの離心率を代表値に
+        ecco = float(getattr(obj.satrecs[0], "ecco", 0.0))
+        c1 = 1.5 * max(4.0 * ecco, 0.0023)
+        c2 = 3.0 * max(ecco / 0.004, 1.0)
         blk = np.array(
-            [
-                max(4.0 * ecco, 0.0023),
-                RMfactor * 3.0e-10,
-                RMfactor * 3.0e-10,
-                1.0e-9,
-                1.0e-9,
-                1.0e-8,
-            ],
+            [c1 * 1e-8, c2 * 1e-10, c2 * 1e-10, 1e-9, 1e-9, 1e-8],
             dtype=float,
         )
         blocks.append(blk)
@@ -139,10 +143,14 @@ def _assemble_x0(
     BCdata: np.ndarray,
     r: int,
     svs: int,
+    *,
+    default_bc: float = 1.0e-2,  # 見つからないときのフォールバック [m^2/kg]
+    warn: bool = True,           # 足りないときに警告出力するか
 ) -> Tuple[np.ndarray, List[float]]:
     """
-    初期状態ベクトル x0g を構築（軌道6 + BC + ROM r）
-    BC は Data/BCdata.txt の推定値を使用（m^2/kg）、MATLABと同じく x のスロットは [BC*1000]
+    初期状態ベクトル x0g を構築（軌道6 + BC + ROM r）。
+    BC は Data/BCdata.txt の推定値（m^2/kg）を優先して使用し、
+    見つからない場合は default_bc を状態に格納（ファイル自体は変更しない）。
     """
     nop = len(objects)
     x0g = np.zeros((svs * nop + r, 1), dtype=float)
@@ -151,16 +159,21 @@ def _assemble_x0(
     for i in range(nop):
         x0g[svs * i + 0 : svs * i + 6, 0] = mee_meas[6 * i : 6 * i + 6, 0]
 
-    # BC 推定
-    bc_used = []
+    # BC 推定（m^2/kg）
+    bc_used: List[float] = []
     for i, obj in enumerate(objects):
         nid = int(obj.noradID)
-        rows = BCdata[BCdata[:, 0] == nid]
+        rows = BCdata[BCdata[:, 0] == nid] if BCdata.size > 0 else np.empty((0, 2))
         if rows.shape[0] == 0:
-            raise ValueError(f"BC not found for NORAD {nid} in BCdata.")
-        bc = float(rows[0, 1])  # m^2/kg
-        x0g[svs * i + 6, 0] = bc * 1000.0  # MATLAB 同様、状態は [BC*1000]
+            if warn:
+                print(f"[warn] BC not found for NORAD {nid} in BCdata. "
+                      f"Using default {default_bc:.6f} m^2/kg.")
+            bc = float(default_bc)
+        else:
+            bc = float(rows[0, 1])  # m^2/kg
+        x0g[svs * i + 6, 0] = bc
         bc_used.append(bc)
+
     return x0g, bc_used
 
 
@@ -169,93 +182,81 @@ def _assemble_x0(
 def run_density_estimation_tle(
     par: EstimationInputs,
     *,
-    # 互換性のため残します。省略時は generate_rom_density_model() を使います。
+    # ROM生成が必要な場合のフック（未指定なら ROM なしで観測生成のみ実行）
     rom_generator: Optional[Callable[[str, int, float, float], ROMBundle]] = None,
-    # 追加: ROM 初期化ベクトル z0 を作る関数（Uh'*(log10 rho - mean) など）
+    # ROM 初期化ベクトル z0 を作る関数（Uh'*(log10 rho - mean) 等）
     rom_initializer: Optional[Callable[[ROMBundle, float], np.ndarray]] = None,
+    # UKF を走らせる場合のフック。未指定なら観測生成/初期化まで。
     stateFnc: Optional[Callable[[np.ndarray, float, float], np.ndarray]] = None,
     measurementFcn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
-) -> Dict[str, object]:
+) -> Dict[str, Any]:
     """
-    MATLAB runDensityEstimationTLE(...) の忠実ポート。
-    既に実装済みの部分は実行、ROM生成・状態遷移はフックを通して差し込めます。
-
-    Parameters
-    ----------
-    rom_generator : (ROMmodel, r, jd0, jdf) -> ROMBundle
-        指定がない場合は densityestimation.models.rom_model.generate_rom_density_model を使用
-    rom_initializer : (rom, jd0) -> z0 (shape=(r,))
-        例: JB2008 でグリッド密度を作って Uh'*(log10(rho)-Dens_Mean) を返す実装を渡す
+    MATLAB runDensityEstimationTLE(...) のポート（観測生成～初期状態構築）。
+    UKFは stateFnc / measurementFcn が与えられた場合のみ本関数内で実行します。
     """
-
-    # --- 日時 ---
+    # --- 期間設定 ---
     jd0, jdf = _jd_range(par.yr, par.mth, par.dy, par.nof_days)
 
-    # --- EOP 読み込み → TEME→J2000 変換へ反映（★重要★） ---
-    EOPMat = load_eop_celestrak(par.eop_path, full=False)  # shape (N,6) [rad,rad,s,s,rad,rad]
+    # 伝播（動力学）ステップは dt_seconds に従う
+    tsec = _time_vector_seconds(jd0, jdf, par.dt_seconds)  # [0:dt:tf]
+
+    # 観測サンプリングは obs_hours_step に従う（従来の1時間固定から分離）
+    obs_epochs = _obs_epochs_by_hours_step(jd0, jdf, par.obs_hours_step)
+
+    # --- EOP 読み込み → TEME→J2000 変換へ反映（★重要） ---
+    EOPMat = load_eop_celestrak(par.eop_path, full=False)
     set_eop_matrix(EOPMat)
 
     # --- TLE ---
-    objects = get_tles_for_estimation(
-        start_year=par.yr,
-        start_month=par.mth,
-        start_day=1,
-        end_year=par.yr,
-        end_month=par.mth,
-        end_day=par.dy + par.nof_days + 30,  # ゆとり
+    end_y, end_m, end_d = _end_ymd(par.yr, par.mth, par.dy, par.nof_days)
+    objects_all = get_tles_for_estimation(
+        start_year=par.yr, start_month=par.mth, start_day=par.dy,
+        end_year=end_y, end_month=end_m, end_day=end_d,
         selected_objects=par.selected_objects,
         get_tles_from_single_file=par.tle_single_file,
         relative_dir=par.tle_dir,
     )
-    # 選択ID順に並べ替え（MATLABと同じ並び前提で後続を組む）
-    objects = _select_objects(objects, par.selected_objects)
+    # 選択ID順に並べ替え（以降の配列整形と一致させる）
+    objects = _select_objects(objects_all, par.selected_objects)
 
-    # --- 観測エポック・観測生成 ---
-    tsec = _time_vector_seconds(jd0, jdf, par.dt_seconds)  # [0:dt:tf]
-    obs_epochs = _obs_epochs_from_time(jd0, tsec)  # JD 配列
-    mee_meas = generate_observations_mee(
-        objects, obs_epochs, GM_EARTH_KM3_S2_ACCURATE
-    )
+    # --- 観測生成（TLE → TEME → J2000 → MEE） ---
+    mee_meas = generate_observations_mee(objects, obs_epochs, GM_EARTH_KM3_S2_ACCURATE)
 
     # --- BC 読み込み・初期状態組み立て ---
     BCdata = load_bc_data(par.bc_path)
     svs = 7  # 6(MEE) + 1(BC)
-    x0g, bc_used = _assemble_x0(objects, mee_meas, BCdata, par.r, svs)
+    x0g, bc_used = _assemble_x0(
+        objects, mee_meas, BCdata, par.r, svs,
+        default_bc=1.0e-2, warn=True
+    )
 
-    # --- ROM 生成（学習済みモデル読み込み等） ---
+    # --- ROM 生成（必要な場合のみ） ---
     rom: Optional[ROMBundle] = None
     if rom_generator is not None:
         rom = rom_generator(par.ROMmodel, par.r, jd0, jdf)
-    else:
-        # 統合版ジェネレータを直接使用（JB2008/NRLMSISE/TIEGCM に対応）
-        rom = generate_rom_density_model(par.ROMmodel, par.r, jd0, jdf)
+        # ROM 初期化（任意）
+        if rom_initializer is not None:
+            z0 = np.asarray(rom_initializer(rom, jd0), dtype=float).reshape(-1)
+            if z0.size != par.r:
+                raise ValueError(f"rom_initializer returned size {z0.size}, expected r={par.r}")
+            x0g[-par.r :, 0] = z0
 
-    # ROM 初期化（任意）：MATLAB の z0_M 相当を反映
-    if rom is not None and rom_initializer is not None:
-        z0 = np.asarray(rom_initializer(rom, jd0), dtype=float).reshape(-1)
-        if z0.size != par.r:
-            raise ValueError(
-                f"rom_initializer returned size {z0.size}, expected r={par.r}"
-            )
-        x0g[-par.r :, 0] = z0
-
-    # --- 測定ノイズ RM ---
+    # --- 測定ノイズ RM（ブロック対角） ---
     RM = _build_RM(objects)
 
-    # --- 初期状態共分散 P とプロセス雑音 Q ---
+    # --- 初期状態共分散 P とプロセス雑音 Q（論文のオーダ） ---
     nop = len(objects)
     Pv = np.zeros((svs * nop + par.r,), dtype=float)
     Qv = np.zeros_like(Pv)
 
-    # 軌道6要素：測定ノイズを初期分散に流用
+    # 軌道6要素：RM の該当6要素を初期分散に採用
+    diag_RM = np.diag(RM)
     for i in range(nop):
-        RMblk = np.diag(RM)[6 * i : 6 * i + 6]
-        Pv[svs * i + 0 : svs * i + 6] = RMblk
-
+        Pv[svs * i + 0 : svs * i + 6] = diag_RM[6 * i : 6 * i + 6]
         # BC 初期分散（1%）
         Pv[svs * i + 6] = (x0g[svs * i + 6, 0] * 0.01) ** 2
 
-        # プロセス雑音：MATLAB 値を踏襲
+        # プロセス雑音（MEE+BC）
         Qv[svs * i + 0] = 1.5e-8
         Qv[svs * i + 1] = 2.0e-14
         Qv[svs * i + 2] = 2.0e-14
@@ -264,46 +265,24 @@ def run_density_estimation_tle(
         Qv[svs * i + 5] = 1.0e-12
         Qv[svs * i + 6] = 1.0e-16  # BC
 
-    # ROM 部分
+    # ROM 部分（ROMがある場合）
     if rom is not None and getattr(rom, "Qrom", None) is not None:
-        # Pv: 初期 ROM 分散（MATLAB値）
         Pv[-par.r :] = 5.0
-        Pv[-par.r] = 20.0  # first mode
-        # Qv: ROM 1時間予測誤差の共分散
+        Pv[-par.r] = 20.0  # first mode やや大きめ
         Qrom = np.array(rom.Qrom)
-        if Qrom.ndim == 1:
-            Qv[-par.r :] = Qrom[: par.r]
-        else:
-            Qv[-par.r :] = np.diag(Qrom)[: par.r]
+        Qv[-par.r :] = (np.diag(Qrom) if Qrom.ndim == 2 else Qrom)[: par.r]
     else:
-        # ROM 未接続なら暫定（小さく置く or 0）
-        Pv[-par.r :] = 5.0
-        Pv[-par.r] = 20.0
-        Qv[-par.r :] = 1e-6
+        # ROM未接続の暫定（小さめに）
+        if par.r > 0:
+            Pv[-par.r :] = 5.0
+            Pv[-par.r] = 20.0
+            Qv[-par.r :] = 1e-6
 
     P = np.diag(Pv)
     Q = np.diag(Qv)
 
-    # --- UKF（stateFnc / measurementFcn が指定されたときのみ実行） ---
-    X_est_hist = np.zeros((svs * nop + par.r, tsec.size), dtype=float)
-    X_est_hist[:, [0]] = x0g
-    Pv_hist = np.zeros_like(X_est_hist)
-    Pv_hist[:, 0] = np.diag(P)
-
-    if stateFnc is not None and measurementFcn is not None:
-        X_est_hist, Pv_hist = ukf(
-            X_est=X_est_hist,
-            Meas=mee_meas,
-            time=tsec,
-            stateFnc=stateFnc,
-            measurementFcn=measurementFcn,
-            P=P,
-            RM=RM,
-            Q=Q,
-            angle_block=6,  # MEEのL（6,12,18,...行）を wrap
-        )
-
-    return dict(
+    # --- 本関数では「観測生成～初期化」までを返す。UKFは上位で実行 ---
+    result: Dict[str, Any] = dict(
         jd0=jd0,
         jdf=jdf,
         tsec=tsec,
@@ -314,84 +293,14 @@ def run_density_estimation_tle(
         P=P,
         Q=Q,
         RM=RM,
-        X_est=X_est_hist,
-        Pv=Pv_hist,
         BC_used=bc_used,
         rom=rom,
+        spec=EstimationStateSpec(n_obj=len(objects), nz=par.r),
+        svs=svs,
     )
 
-
-# UKF 実装（どちらでもOK）
-try:
-    from densityestimation.ukf.srukf import SquareRootUKF as UKF
-except Exception:
-    from densityestimation.ukf.unscented import UnscentedKalmanFilter as UKF
-
-# ====== 準備 ======
-n_obj  = 3       # まずは少数でスモークテスト
-nz     = 10      # ROMランク r
-dt_sec = 3600.0  # 1時間
-spec   = EstimationStateSpec(n_obj=n_obj, nz=nz)
-
-# --- JB2008 ROM の学習済みモデルをロード（Ur, xbar, Ac, Bc など） ---
-# 既存の読み出し関数があれば呼び出し。ここでは疑似的に placeholders:
-Ur   = np.load('JB2008_Ur.npy')
-xbar = np.load('JB2008_xbar.npy')
-Ac   = np.load('JB2008_Ac.npy')
-Bc   = np.load('JB2008_Bc.npy')
-
-# 入力（F10.7, Kp 等）を時刻から作る関数
-from densityestimation.spaceweather.load_jb2008_swdata import (
-    make_jb2008_input_fn,  # 既存想定
-)
-
-input_fn = make_jb2008_input_fn()
-
-rom = ROMRuntime(Ur=Ur, xbar=xbar, Ac=Ac, Bc=Bc, input_fn=input_fn)
-
-# 密度補間（log10rho_grid -> rho(point)）
-from densityestimation.grid import make_interp_fn  # 既存想定
-
-grid_interp_fn = make_interp_fn()
-
-# TLEプロバイダ
-from densityestimation.tle.get_tles_for_estimation import make_tle_provider  # 既存想定
-
-tle_provider = make_tle_provider()
-
-# --- f, h を構築 ---
-f = make_process_model(rom, spec, grid_interp_fn, dt_sec)
-h = make_measurement_model(spec, tle_provider)
-
-# --- 初期状態 x0 / 共分散 P0 / ノイズ行列 Q,R ---
-# 既存の論文設定に近い値を置く（後で調整）
-mee0_list = [ (7000.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n_obj) ]  # ダミー
-bc0_list  = [ 0.01 for _ in range(n_obj) ]
-z0        = np.zeros((nz,))
-x0        = pack_state(mee0_list, bc0_list, z0)
-
-nx = len(x0)
-P0 = np.eye(nx) * 1e-4
-
-# プロセスノイズ（論文 (20)(21) のオーダ）
-Q = np.eye(nx) * 1e-8
-
-# 観測ノイズ（論文 (19) を簡略化、物体ごとに diag([σp,σf,σg,σh,σk,σL])）
-R_block = np.diag([1.5e-8, 3e-10, 3e-10, 1e-9, 1e-9, 1e-8])
-R = np.kron(np.eye(n_obj), R_block)
-
-# --- UKF 準備 ---
-ukf = UKF(dim_x=nx, dim_z=6*n_obj, fx=f, hx=h, dt=dt_sec, x0=x0, P0=P0, Q=Q, R=R)
-
-# ====== 逐次推定（例: 24ステップ） ======
-t0 = datetime(2002,8,1,0,0,0, tzinfo=timezone.utc)
-t  = t0
-for k in range(24):
-    ukf.predict(t)      # fxで予測
-    z_meas = h(ukf.x, t)  # TLEからの観測値
-    ukf.update(z_meas, t)
-    t += timedelta(seconds=dt_sec)
-
-# 結果
-x_est = ukf.x
-print("Final state shape:", x_est.shape)
+    # --- 互換: stateFnc / measurementFcn が与えられたらここで同化まで走らせたい場合 ---
+    if stateFnc is not None and measurementFcn is not None:
+        # ここでは“互換フック”のみ提供。SR-UKF/UKF 実装に合わせて上位で配線を推奨。
+        result["note"] = "stateFnc/measurementFcn supplied; run your UKF driver with returned x0,P,Q,RM."
+    return result

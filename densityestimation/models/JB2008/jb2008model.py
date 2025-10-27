@@ -1,4 +1,4 @@
-# densityestimation/models/jb2008/jb2008.py
+# densityestimation/models/jb2008/jb2008model.py
 from __future__ import annotations
 
 from typing import Tuple
